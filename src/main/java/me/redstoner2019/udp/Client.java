@@ -1,29 +1,25 @@
 package me.redstoner2019.udp;
 
-import me.redstoner2019.Util;
 import me.redstoner2019.compression.CompressionUtil;
 import me.redstoner2019.compression.DecompressionUtil;
 import me.redstoner2019.screenshot.Screenshot;
 
-import javax.imageio.ImageIO;
 import javax.swing.*;
 import java.awt.*;
 import java.awt.image.BufferedImage;
-import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.net.*;
 import java.nio.ByteBuffer;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.nio.IntBuffer;
+import java.util.Arrays;
 
 public class Client {
     private static DatagramSocket socket;
     private static InetAddress address;
-    public static final int BUFFER_S = 65535*4;
+    private static int width = 1920;
+    private static int height = 1080;
 
-    public static void main(String[] args) throws Exception {
+    public static void main(String[] args) throws SocketException, UnknownHostException {
         JFrame frame = new JFrame();
         frame.setSize(1920,1080);
         frame.setDefaultCloseOperation(WindowConstants.EXIT_ON_CLOSE);
@@ -36,168 +32,175 @@ public class Client {
         socket = new DatagramSocket();
         address = InetAddress.getByName("localhost");
 
-        socket.setSendBufferSize(Integer.MAX_VALUE);
-        socket.setReceiveBufferSize(Integer.MAX_VALUE);
+        final ByteBuffer[] frameBuffer = {ByteBuffer.allocate(width * height * 4)};
 
-        final AtomicInteger[] frames = {new AtomicInteger()};
-        final long[] update = {System.currentTimeMillis()};
+        Thread recieveThread = new Thread(new Runnable() {
+            @Override
+            public void run() {
 
-        Thread recieveThread = new Thread(() -> {
-            BufferedImage image = new BufferedImage(2560,1440,1);
-            //Screenshot.init(2560,1440);
-            while (true) {
-                //screen.setIcon(new ImageIcon(Screenshot.getInstance().screenshot(0,0)));
-                byte[] BUFFER_SIZE = new byte[BUFFER_S];
-                DatagramPacket packet = new DatagramPacket(BUFFER_SIZE,BUFFER_SIZE.length);
-                try {
-                    socket.receive(packet);
-                } catch (IOException e) {
-                    throw new RuntimeException(e);
-                }
-                Thread t = new Thread(new Runnable() {
-                    @Override
-                    public void run() {
-                        try {
-                            ByteArrayInputStream allData = new ByteArrayInputStream(packet.getData());
+                Screenshot scr = new Screenshot(1920,1080);
 
-                            short x = bytesToShort(allData.readNBytes(2));
-                            short y = bytesToShort(allData.readNBytes(2));
-                            short w = bytesToShort(allData.readNBytes(2));
-                            short h = bytesToShort(allData.readNBytes(2));
+                while (true) {
+                    try{
+                        byte[] BUFFER = new byte[65535];
+                        DatagramPacket packet = new DatagramPacket(BUFFER,BUFFER.length);
 
-                            byte[] bytes;
+                        socket.receive(packet);
 
-                            if(DataRunnable.compress) bytes = DecompressionUtil.decompress(allData.readAllBytes());
-                            else bytes = allData.readAllBytes();
+                        ByteBuffer packetBuffer = ByteBuffer.wrap(packet.getData());
 
-                            ByteArrayInputStream imageData = new ByteArrayInputStream(bytes);
+                        short w = packetBuffer.getShort();
+                        short h = packetBuffer.getShort();
+                        int index0 = packetBuffer.getInt();
+                        int index1 = packetBuffer.getInt();
+                        byte[] data = new byte[packetBuffer.capacity() - 12];
+                        packetBuffer.get(data);
 
-                            //System.out.println(x + " / " + y + " / " + w + " / " + h);
+                        data = DecompressionUtil.decompress(data);
 
-                            BufferedImage imageRead = ImageIO.read(imageData);
-
-                            Graphics2D g = image.createGraphics();
-
-                            g.drawImage(imageRead,x,y,w,h,null);
-
-                            g.dispose();
-
-                            frames[0].getAndIncrement();
-
-                            if(System.currentTimeMillis() - update[0] > 1000){
-                                update[0] = System.currentTimeMillis();
-                                System.out.println();
-                                System.out.println(frames[0].get() + " updates/s");
-                                frames[0].set(0);
-                            }
-
-                            screen.setIcon(new ImageIcon(image));
-                        } catch (IOException e) {
-                            throw new RuntimeException(e);
+                        if(width != w || height != h){
+                            width = w;
+                            height = h;
+                            frameBuffer[0] = ByteBuffer.allocate(width * height * 4);
+                            System.out.println("Recreated Buffer");
                         }
-                    }
-                });
-                t.start();
 
+                        replaceBytes(frameBuffer[0],ByteBuffer.wrap(data),index0,index1);
+                    }catch (Exception e){
+                        e.printStackTrace();
+                        break;
+                    }
+                }
             }
         });
         recieveThread.start();
 
-        Rectangle screenRect = new Rectangle(Toolkit.getDefaultToolkit().getScreenSize());
+        Thread renderThread = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                while (true) {
+                    int[] pixelData = convertByteArrayToIntArray(frameBuffer[0].array());
+                    BufferedImage img = new BufferedImage(width,height,1);
+                    img.setRGB(0, 0, width, height, pixelData , 0, width);
+                    screen.setIcon(new ImageIcon(img));
+                }
+            }
+        });
+        renderThread.start();
 
-        System.out.println(screenRect);
+        Thread sendThread = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                Rectangle screenRect = new Rectangle(Toolkit.getDefaultToolkit().getScreenSize());
 
-        Screenshot scr = new Screenshot((int) screenRect.getWidth(), (int) screenRect.getHeight());
-        //Screenshot scr = new Screenshot(1920,1080);
+                short width = (short) screenRect.getWidth();
+                short height = (short) screenRect.getHeight();
 
-        int updates = 0;
-        long lastUpdate = System.currentTimeMillis();
+                Screenshot scr = new Screenshot((int) screenRect.getWidth(),(int) screenRect.getHeight());
 
-        while (true) {
-            //BufferedImage screenshot = scr.screenshot(0,0);
-            int[] bytes = scr.screenshotInts(0,0);
+                while (true) {
+                    byte[] screenshot = convertIntArrayToByteArray(scr.screenshotInts(0,0));
 
-            //screenshot = Util.resize(screenshot,1280,720);
+                    int size = 650000;
 
-            /*Thread thread = new Thread(new Runnable() {
-                @Override
-                public void run() {
-                    BufferedImage finalScreenshot = Util.resize(screenshot,1280,720);
+                    for (int i = 0; i < screenshot.length; i+=size) {
+                        int i1 = Math.min(i + size,screenshot.length);
 
-                    //screenshot = Util.resize(screenshot,2560,1440);
+                        byte[] data = CompressionUtil.compress(Arrays.copyOfRange(screenshot, i,i1));
 
-                    int size = 512;
+                        ByteBuffer dataBuffer = ByteBuffer.allocate(data.length + 12);
+                        dataBuffer.putShort(width);
+                        dataBuffer.putShort(height);
+                        dataBuffer.putInt(i);
+                        dataBuffer.putInt(i1);
+                        dataBuffer.put(data);
 
-                    for (int x = 0; x < screenRect.getWidth(); x+=size) {
-                        for (int y = 0; y < screenRect.getHeight(); y+=size) {
-                            try{
-                                ImageSender runnable = new ImageSender(finalScreenshot.getSubimage(x,y, (int) Math.min(size, finalScreenshot.getWidth()-x), (int) Math.min(size, finalScreenshot.getHeight()-y)),x,y,socket,address);
-                                new Thread(runnable).start();
-                            }catch (Exception e){
-                                //System.out.println(Math.min(size,screenshot.getWidth()-x) + " " + x + " " + screenshot.getWidth());
-                            }
+                        DatagramPacket packet = new DatagramPacket(new byte[dataBuffer.capacity()],dataBuffer.capacity(),address,8002);
+                        packet.setLength(dataBuffer.capacity());
+                        packet.setData(dataBuffer.array());
+
+                        try {
+                            socket.send(packet);
+                        } catch (IOException e) {
+                            throw new RuntimeException(e);
                         }
                     }
                 }
-            });
-            thread.start();*/
-            //ImageSender.convertToByteArray(screenshot,"PNG");
-
-            //bytes = CompressionUtil.compress(bytes);
-
-            //List<byte[]> data = new ArrayList<>();
-
-            /*int i = 0;
-
-            while (i<bytes.length) {
-                byte[] b = new byte[65000];
-                for (int j = 2; j < 65000; j++) {
-                    if(i >= bytes.length){
-                        break;
-                    }
-                    b[j] = bytes[i];
-                    i++;
-                }
-                data.add(b);
-            }*/
-
-            //System.out.println(data.size());
-
-            updates++;
-
-            if(System.currentTimeMillis() - lastUpdate > 1000){
-                lastUpdate = System.currentTimeMillis();
-                System.out.println(updates + " FPS sending");
-                updates = 0;
             }
+        });
+        sendThread.start();
+    }
+
+    public static int[] convertByteArrayToIntArray(byte[] byteArray) {
+        // Calculate the length of the resulting int array
+        int[] intArray = new int[(int) Math.ceil(byteArray.length / 4.0)];
+
+        // Convert byte array to int array
+        for (int i = 0; i < intArray.length; i++) {
+            intArray[i] = ((byteArray[i * 4] & 0xFF) << 24) |
+                    ((byteArray[i * 4 + 1] & 0xFF) << 16) |
+                    ((byteArray[i * 4 + 2] & 0xFF) << 8) |
+                    (byteArray[i * 4 + 3] & 0xFF);
         }
 
-        /*int size = 512;
-        int threads = 0;
+        return intArray;
+    }
 
-        for (int x = 0; x < screenRect.getWidth(); x+=size) {
-            for (int y = 0; y < screenRect.getHeight(); y+=size) {
-                DataRunnable runnable = new DataRunnable(x,y,size,size,socket,address);
-                new Thread(runnable).start();
-                threads++;
-            }
-        }*/
-
-
-
-        //DataRunnable runnable = new DataRunnable(0,0,size,size,socket,address);
-        //new Thread(runnable).start();
-        //threads++;
-
-        //System.out.println(threads + " Threads");
+    public static byte[] intToBytes(int i) {
+        ByteBuffer buffer = ByteBuffer.allocate(4);
+        buffer.putInt(i);
+        return buffer.array();
     }
 
     public static int bytesToInt(byte[] bytes) {
         ByteBuffer buffer = ByteBuffer.wrap(bytes);
         return buffer.getInt();
     }
+
     public static short bytesToShort(byte[] bytes) {
         ByteBuffer buffer = ByteBuffer.wrap(bytes);
         return buffer.getShort();
+    }
+
+    public static byte[] convertIntArrayToByteArray(int[] intArray) {
+        ByteBuffer byteBuffer = ByteBuffer.allocate(intArray.length * 4);
+        for (int value : intArray) {
+            byteBuffer.putInt(value);
+        }
+        return byteBuffer.array();
+    }
+
+    /**
+     * Replaces a section of the destination ByteBuffer with the contents of the source ByteBuffer.
+     *
+     * @param dest          The destination ByteBuffer where the data will be replaced.
+     * @param src           The source ByteBuffer that provides the replacement data.
+     * @param startPosition The starting position in the destination ByteBuffer where the replacement begins.
+     * @param endPosition   The ending position in the destination ByteBuffer where the replacement ends.
+     */
+    public static void replaceBytes(ByteBuffer dest, ByteBuffer src, int startPosition, int endPosition) {
+        if (startPosition < 0 || endPosition > dest.capacity() || startPosition > endPosition) {
+            throw new IllegalArgumentException("Invalid start or end position");
+        }
+
+        int length = endPosition - startPosition;
+
+        if (src.remaining() < length) {
+            throw new IllegalArgumentException("Source ByteBuffer does not have enough data to replace the specified range");
+        }
+
+        // Set the position of 'dest' to start at the replacement point
+        dest.position(startPosition);
+
+        // Set the limit of 'src' to the number of bytes that should be read
+        src.limit(src.position() + length);
+        src = src.slice(); // Get a slice of the buffer to ensure we only read the specified range
+
+        // Replace the section in 'dest' with 'src'
+        dest.put(src);
+
+        // Optionally reset dest position and limit
+        dest.position(0);
+        dest.limit(dest.capacity());
     }
 }

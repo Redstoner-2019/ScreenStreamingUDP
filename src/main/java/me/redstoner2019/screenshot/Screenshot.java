@@ -6,6 +6,7 @@ import com.sun.jna.platform.win32.User32;
 import com.sun.jna.platform.win32.WinDef;
 import com.sun.jna.platform.win32.WinGDI;
 import com.sun.jna.ptr.PointerByReference;
+import me.redstoner2019.udp.ClientOld;
 
 import java.awt.image.BufferedImage;
 import java.nio.ByteBuffer;
@@ -88,8 +89,6 @@ public class Screenshot {
     }
 
     public static byte[] intToBytes(int i) {
-        ByteBuffer buffer = ByteBuffer.allocate(4);
-        buffer.putInt(i);
-        return buffer.array();
+        return ClientOld.intToBytes(i);
     }
 }
